@@ -1,0 +1,5 @@
+{
+  "name": "Manan - An Assistant For Your Notes on Books",
+  "description": "Scan EPUBs and PDFs for noteworthy insights, quotes, and lessons. Select highlights and generate a polished Markdown file for your notes.",
+  "requestFramePermissions": []
+}
