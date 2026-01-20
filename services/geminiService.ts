@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { ChapterData, NuggetType } from "../types";
 
@@ -14,18 +13,34 @@ export const scanChapterForNuggets = async (
   chapterIndex: number, 
   locationLabel: string,
   analyzeBackMatter: boolean = false,
-  analyzeFrontMatter: boolean = false
+  analyzeBoilerplate: boolean = false,
+  selectedTypes: NuggetType[] = [NuggetType.QUOTE, NuggetType.LEARNING, NuggetType.INSIGHT]
 ): Promise<{ data: ChapterData; usage: { input: number; output: number } }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const typeInstructions = selectedTypes.length > 0 
+    ? `ONLY extract the following types: ${selectedTypes.join(", ")}.`
+    : "Extract all noteworthy insights, learning points, or direct quotes.";
+
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
     contents: `Analyze this section of a book (Section ${chapterIndex + 1}, ${locationLabel}).
-    EXTRACT ALL noteworthy insights, learning points, or direct quotes. 
-    DO NOT limit yourself to a fixed number. If the text is dense with value, extract more. 
+    ${typeInstructions}
     
+    CRITICAL INSTRUCTIONS FOR ATTRIBUTION:
+    - For every QUOTE or specific INSIGHT, you MUST identify the original author if mentioned.
+    - If the author is the book's main author, attribute it to them.
+    - If it's a quote from a third-party (e.g. Einstein, Jobs, etc.) mentioned in the text, attribute it to them.
+    - Populate the 'source' field with the Author name and any specific page/context if found.
+
     CRITICAL CLASSIFICATION:
-    - Identify if this is "Front Matter" (e.g., Table of Contents, Preface, Foreword, Introduction, Copyright, Title Page).
-    - Identify if this is "Back Matter" (e.g., References, Index, Bibliography, Acknowledgments, Appendix).
+    - Determine if this section is "Boilerplate Front Matter" (Copyright, Table of Contents, Dedication, Acknowledgements, Foreword by others).
+    - Determine if this section is "Content Front Matter" (Introduction, Preface, Prologue, Author's Note).
+    - Determine if this section is "Body" (Standard chapters).
+    - Determine if this section is "Back Matter" (Index, Bibliography, References).
+
+    Mark 'isBoilerplate' as true ONLY for the "Boilerplate Front Matter" category.
+    "Content Front Matter" (Introduction, etc.) should be marked as false for isBoilerplate and analyzed for insights.
 
     TEXT:
     ${chapterText}`,
@@ -35,8 +50,8 @@ export const scanChapterForNuggets = async (
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING },
-          isBackMatter: { type: Type.BOOLEAN, description: "True if this is bibliography, index, appendix, etc." },
-          isFrontMatter: { type: Type.BOOLEAN, description: "True if this is Preface, ToC, Introduction, etc." },
+          isBoilerplate: { type: Type.BOOLEAN, description: "True if this is Copyright, ToC, Dedication, etc." },
+          isBackMatter: { type: Type.BOOLEAN, description: "True if this is bibliography, index, appendix." },
           nuggets: {
             type: Type.ARRAY,
             items: {
@@ -45,13 +60,13 @@ export const scanChapterForNuggets = async (
                 id: { type: Type.STRING },
                 type: { type: Type.STRING, enum: [NuggetType.QUOTE, NuggetType.LEARNING, NuggetType.INSIGHT] },
                 content: { type: Type.STRING },
-                source: { type: Type.STRING }
+                source: { type: Type.STRING, description: "Author name or source reference." }
               },
               required: ["id", "type", "content"]
             }
           }
         },
-        required: ["title", "nuggets", "isBackMatter", "isFrontMatter"]
+        required: ["title", "nuggets", "isBoilerplate", "isBackMatter"]
       }
     }
   });
@@ -60,19 +75,27 @@ export const scanChapterForNuggets = async (
   const jsonStr = response.text || "{}";
   const rawData = JSON.parse(jsonStr.trim());
   
+  const skipBecauseBoilerplate = rawData.isBoilerplate && !analyzeBoilerplate;
   const skipBecauseBackMatter = rawData.isBackMatter && !analyzeBackMatter;
-  const skipBecauseFrontMatter = rawData.isFrontMatter && !analyzeFrontMatter;
 
-  if (skipBecauseBackMatter || skipBecauseFrontMatter) {
+  if (skipBecauseBoilerplate || skipBecauseBackMatter) {
     return { 
-      data: { title: rawData.title, isBackMatter: !!rawData.isBackMatter, isFrontMatter: !!rawData.isFrontMatter, nuggets: [] }, 
+      data: { 
+        title: rawData.title, 
+        isBackMatter: !!rawData.isBackMatter, 
+        isFrontMatter: !!rawData.isBoilerplate, 
+        nuggets: [] 
+      }, 
       usage: { input: usage.promptTokenCount, output: usage.candidatesTokenCount } 
     };
   }
 
+  const filteredNuggets = rawData.nuggets.filter((n: any) => selectedTypes.includes(n.type as NuggetType));
+
   const data: ChapterData = {
     ...rawData,
-    nuggets: rawData.nuggets.map((n: any, idx: number) => ({
+    isFrontMatter: rawData.isBoilerplate,
+    nuggets: filteredNuggets.map((n: any, idx: number) => ({
       ...n,
       id: `c${chapterIndex}_${n.id}`,
       locationLabel,
@@ -87,11 +110,11 @@ export const recallSearch = async (query: string, bookTitle: string, contextChun
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: `The user is looking for something specific in the book "${bookTitle}".
-    Carefully find any information matching: "${query}".
-    Look for specific quotes, learning points, or insights.
+    contents: `Searching in "${bookTitle}" for: "${query}".
+    Find exact matches, quotes, or specific facts.
+    Attribute quotes to authors.
     
-    Context from book:
+    Context:
     ${contextChunks.join("\n\n---\n\n")}
     `,
     config: {

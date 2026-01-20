@@ -12,6 +12,7 @@ export interface BookNugget {
   source?: string;
   locationLabel?: string;
   sortIndex: number;
+  tags?: string[];
 }
 
 export interface ChapterData {
@@ -36,6 +37,9 @@ export interface NoteItem {
   chapterIndex: number;
   sortIndex: number;
   locationLabel?: string;
+  tags?: string[];
+  // Added optional source property for quote/insight attribution
+  source?: string;
 }
 
 export interface UsageStats {
